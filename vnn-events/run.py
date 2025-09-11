@@ -11,11 +11,21 @@ from publisher.publish_ics import publish_ics
 from sources.impact_montana import ImpactMontana
 from sources.adaptive_pc import AdaptivePerformanceCenter
 from sources.vub_montana import VeteransUpwardBoundMT
+from sources.google_events import GoogleEvents
+from sources.eventbrite_api import EventbriteMTWY
+from sources.meetup_api import MeetupMTWY
+from sources.generic_ics import GenericICS
+
 
 def main():
     sources = [
         ImpactMontana(),
         AdaptivePerformanceCenter(),
+                GoogleEvents(),
+        EventbriteMTWY(),
+        MeetupMTWY(),
+        GenericICS(),
+
         VeteransUpwardBoundMT(),  # uses VUB_ICS_URL if present
     ]
 
