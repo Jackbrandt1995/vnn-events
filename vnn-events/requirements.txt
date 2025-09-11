@@ -6,3 +6,4 @@ lxml
 icalendar
 rapidfuzz
 python-slugify
+python-dotenv
