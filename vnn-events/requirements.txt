@@ -1,0 +1,8 @@
+python-dateutil
+pytz
+requests
+beautifulsoup4
+lxml
+icalendar
+rapidfuzz
+python-slugify
