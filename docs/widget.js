@@ -1,5 +1,5 @@
 (async function(){
-  const FEED_URL = https"://jackbrandt1995.github.io/vnn-events/events.json";
+  const FEED_URL = "https://jackbrandt1995.github.io/vnn-events/events.json";;
   const root = document.getElementById("vnn-events-root");
   root.innerHTML = `<div class="vnn-loading">Loading events…</div>`;
 
