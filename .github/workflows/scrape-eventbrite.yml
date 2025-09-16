@@ -1,0 +1,35 @@
+name: Scrape Eventbrite
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    env:
+      EVENTBRITE_TOKEN: ${{ secrets.EVENTBRITE_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Eventbrite scraper
+        run: |
+          python scripts/scrape_eventbrite.py
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eventbrite-events
+          path: output/events.json
