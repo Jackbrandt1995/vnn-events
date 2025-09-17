@@ -4,7 +4,7 @@ from typing import List, Dict
 import logging
 import os
 import sys
-
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from config import REGION_STATES, LOOKAHEAD_DAYS, OUTPUT_DIR, PUBLIC_BASE_URL
 from utils.normalize import clean_and_filter
 from utils.dedupe import dedupe
