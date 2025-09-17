@@ -7,32 +7,23 @@ import requests
 
 API_BASE = "https://www.eventbriteapi.com/v3"
 
-def get_token():
-    """Return the Eventbrite API token from environment or None."""
+def save_results(payload: dict, path: str = "output/events.json") -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+def get_token() -> str:
     token = os.environ.get("EVENTBRITE_TOKEN")
-    if not token:
-        return None
     return token
 
-def fetch_events(token: str, states=None, within="300mi", query="veteran"):
-    """Fetch events from Eventbrite API for the given states.
-
-    Args:
-        token: Eventbrite API token.
-        states: list of state names to search. Defaults to ["Montana", "Wyoming"].
-        within: search radius for the location.
-        query: search query string.
-
-    Returns:
-        List of event dictionaries.
-    """
+def fetch_events(token: str, states=None, within="500mi", query="veteran OR veterans") -> list:
     if states is None:
         states = ["Montana", "Wyoming"]
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
-    all_events = []
+    results = []
     session = requests.Session()
     for state in states:
         params = {
@@ -43,51 +34,31 @@ def fetch_events(token: str, states=None, within="300mi", query="veteran"):
             "page": 1,
         }
         while True:
-            try:
-                resp = session.get(f"{API_BASE}/events/search/", headers=headers, params=params, timeout=30)
-            except Exception as exc:
-                raise RuntimeError(f"Request error: {exc}") from exc
-            # Check for non-200 status codes and include body in error
+            resp = session.get(f"{API_BASE}/events/search/", headers=headers, params=params, timeout=30)
             if resp.status_code != 200:
-                err = f"Eventbrite API returned status {resp.status_code}"
-                try:
-                    body = resp.json()
-                except Exception:
-                    body = resp.text
-                raise RuntimeError(f"{err}: {body}")
+                raise RuntimeError(f"Eventbrite API returned status {resp.status_code}: {resp.text}")
             data = resp.json()
             events = data.get("events", []) or []
-            all_events.extend(events)
+            results.extend(events)
             pagination = data.get("pagination", {})
             if not pagination.get("has_more_items"):
                 break
-            # increment page for next request
-            params["page"] = params.get("page", 1) + 1
-            # be gentle with API rate limits
+            params["page"] += 1
             time.sleep(0.5)
-    return all_events
-
-def save_results(payload: dict, path: str = "output/events.json") -> None:
-    """Save results payload to JSON file."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return results
 
 def main() -> None:
     token = get_token()
     if not token:
         msg = "EVENTBRITE_TOKEN environment variable not set."
-        # print to stderr and write an error payload to output
         print(msg, file=sys.stderr)
         save_results({"generated": False, "error": msg})
         sys.exit(1)
     try:
         events = fetch_events(token)
-        # write success payload with events list
         save_results({"generated": True, "events": events})
         print(f"Fetched {len(events)} events")
     except Exception as exc:
-        # on error, write error message to output and exit
         err_msg = str(exc)
         print(err_msg, file=sys.stderr)
         save_results({"generated": False, "error": err_msg})
