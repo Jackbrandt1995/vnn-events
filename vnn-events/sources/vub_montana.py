@@ -11,7 +11,7 @@ from dateutil import tz
 from datetime import datetime
 
 from .base import Source, norm_event
-from ..config import VUB_ICS_URL
+from config import VUB_ICS_URL
 
 DEFAULT_TZ = tz.gettz("America/Denver")
 
