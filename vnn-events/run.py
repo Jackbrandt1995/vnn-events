@@ -18,6 +18,9 @@ import logging
 import os
 import sys
 from typing import List, Dict
+# Ensure local modules are discoverable when run from repository root
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
 
 from config import REGION_STATES, LOOKAHEAD_DAYS, OUTPUT_DIR, PUBLIC_BASE_URL
 from utils.normalize import clean_and_filter
