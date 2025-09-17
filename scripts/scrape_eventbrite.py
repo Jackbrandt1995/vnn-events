@@ -5,23 +5,35 @@ import time
 import json
 import requests
 
+API_BASE = "https://www.eventbriteapi.com/v3"
 
 def get_token():
+    """Return the Eventbrite API token from environment or None."""
     token = os.environ.get("EVENTBRITE_TOKEN")
     if not token:
-        print("ERROR: EVENTBRITE_TOKEN environment variable not set.", file=sys.stderr)
-        sys.exit(1)
+        return None
     return token
 
+def fetch_events(token: str, states=None, within="300mi", query="veteran"):
+    """Fetch events from Eventbrite API for the given states.
 
-def fetch_events(token, query="veteran", states=None, within="300mi"):
+    Args:
+        token: Eventbrite API token.
+        states: list of state names to search. Defaults to ["Montana", "Wyoming"].
+        within: search radius for the location.
+        query: search query string.
+
+    Returns:
+        List of event dictionaries.
+    """
     if states is None:
         states = ["Montana", "Wyoming"]
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
-    results = []
+    all_events = []
+    session = requests.Session()
     for state in states:
         params = {
             "q": query,
@@ -31,37 +43,55 @@ def fetch_events(token, query="veteran", states=None, within="300mi"):
             "page": 1,
         }
         while True:
-            resp = requests.get("https://www.eventbriteapi.com/v3/events/search/", headers=headers, params=params, timeout=30)
+            try:
+                resp = session.get(f"{API_BASE}/events/search/", headers=headers, params=params, timeout=30)
+            except Exception as exc:
+                raise RuntimeError(f"Request error: {exc}") from exc
+            # Check for non-200 status codes and include body in error
             if resp.status_code != 200:
-                print(f"ERROR: Eventbrite API returned status {resp.status_code} for state {state} page {params['page']}", file=sys.stderr)
+                err = f"Eventbrite API returned status {resp.status_code}"
                 try:
-                    print(resp.json(), file=sys.stderr)
+                    body = resp.json()
                 except Exception:
-                    print(resp.text, file=sys.stderr)
-                break
+                    body = resp.text
+                raise RuntimeError(f"{err}: {body}")
             data = resp.json()
-            events = data.get("events", [])
-            results.extend(events)
+            events = data.get("events", []) or []
+            all_events.extend(events)
             pagination = data.get("pagination", {})
             if not pagination.get("has_more_items"):
                 break
-            params["page"] += 1
+            # increment page for next request
+            params["page"] = params.get("page", 1) + 1
+            # be gentle with API rate limits
             time.sleep(0.5)
-    return results
+    return all_events
 
-
-def save_results(events, path="output/events.json"):
+def save_results(payload: dict, path: str = "output/events.json") -> None:
+    """Save results payload to JSON file."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(events, f, ensure_ascii=False, indent=2)
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
-
-def main():
+def main() -> None:
     token = get_token()
-    events = fetch_events(token=token, query="veteran", states=["Montana","Wyoming"], within="300mi")
-    print(f"Fetched {len(events)} events")
-    save_results(events)
-
+    if not token:
+        msg = "EVENTBRITE_TOKEN environment variable not set."
+        # print to stderr and write an error payload to output
+        print(msg, file=sys.stderr)
+        save_results({"generated": False, "error": msg})
+        sys.exit(1)
+    try:
+        events = fetch_events(token)
+        # write success payload with events list
+        save_results({"generated": True, "events": events})
+        print(f"Fetched {len(events)} events")
+    except Exception as exc:
+        # on error, write error message to output and exit
+        err_msg = str(exc)
+        print(err_msg, file=sys.stderr)
+        save_results({"generated": False, "error": err_msg})
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()
