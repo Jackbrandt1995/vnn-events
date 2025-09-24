@@ -3,7 +3,7 @@ name: Scrape Eventbrite
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *'  # Fixed: was '0 6 * **' (missing last field)
 
 jobs:
   scrape:
