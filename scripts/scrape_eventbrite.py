@@ -1,48 +1,126 @@
 #!/usr/bin/env python3
 """
-Fixed Eventbrite scraper that matches the GitHub workflow expectations.
-This file should be saved as scripts/scrape_eventbrite.py
+Scrape Eventbrite for veteran events in Montana and Wyoming over the next 60 days.
+
+This script queries the Eventbrite API for events matching veteran‑related terms in the
+states of Montana and Wyoming. It validates the API token, paginates through search
+results, filters events to those occurring within the next LOOKAHEAD_DAYS, deduplicates
+them by (name, start), and writes both a machine‑readable JSON file and a human‑
+friendly Markdown file.
 """
 
+import json
 import os
 import sys
 import time
-import json
-import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
+import requests
+
+# API configuration
 API_BASE = "https://www.eventbriteapi.com/v3"
+OUT_JSON = "events.json"
+OUT_MD = "events.md"
+
 DEFAULT_STATES = ["Montana", "Wyoming"]
-DEFAULT_QUERY = "veteran OR veterans OR military OR service member"
-DEFAULT_WITHIN = "500mi"
-LOOKAHEAD_DAYS = 60
-OUTPUT_DIR = "output"
+DEFAULT_QUERY = os.environ.get(
+    "EVENTBRITE_QUERY",
+    "veteran OR veterans OR military OR service member",
+)
+DEFAULT_WITHIN = os.environ.get("EVENTBRITE_WITHIN", "500mi")
+LOOKAHEAD_DAYS = int(os.environ.get("EVENTBRITE_DAYS", "60"))
+PAGE_DELAY_SEC = float(os.environ.get("EVENTBRITE_PAGE_DELAY_SEC", "0.5"))
 
 
-def save_results(payload: Dict, filename: str = "events.json") -> None:
-    """Save results to the output directory expected by the GitHub workflow."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    filepath = os.path.join(OUTPUT_DIR, filename)
-    with open(filepath, "w", encoding="utf-8") as f:
+def save_json(payload: Dict, path: str = OUT_JSON) -> None:
+    """Write a dict to a JSON file with UTF‑8 encoding."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(f"Results saved to {filepath}")
 
 
-def validate_token(token: str) -> bool:
-    """Validate the Eventbrite API token."""
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+def save_markdown(events: List[Dict], path: str = OUT_MD) -> None:
+    """Render a list of events to a Markdown file for easy reading."""
+    lines: List[str] = []
+    lines.append("# Upcoming Veteran Events in Montana and Wyoming\n")
+    if not events:
+        lines.append(f"No events found within the next {LOOKAHEAD_DAYS} days.\n")
+    else:
+        for e in events:
+            name = e.get("name") or "Unnamed Event"
+            lines.append(f"## {name}\n")
+            start = e.get("start") or ""
+            # Fix: Handle timezone-aware datetime formatting
+            start_fmt = ""
+            if start:
+                try:
+                    # Parse and format datetime properly
+                    if start.endswith('Z'):
+                        dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                    else:
+                        dt = datetime.fromisoformat(start)
+                    start_fmt = dt.strftime('%Y-%m-%d %H:%M')
+                except (ValueError, AttributeError):
+                    start_fmt = start.replace("T", " ").replace("Z", "")
+            if start_fmt:
+                lines.append(f"- **Date:** {start_fmt}\n")
+            
+            loc_parts: List[str] = []
+            if e.get("venue_name"):
+                loc_parts.append(e["venue_name"])
+            if e.get("address"):
+                loc_parts.append(e["address"])
+            if e.get("city"):
+                loc_parts.append(e["city"])
+            if e.get("state"):
+                loc_parts.append(e["state"])
+            if loc_parts:
+                lines.append(f"- **Location:** {', '.join(loc_parts)}\n")
+            url = e.get("url")
+            if url:
+                lines.append(f"- **Sign up:** [{url}]({url})\n")
+            lines.append("")
+    
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+
+def get_token() -> str:
+    """Retrieve the Eventbrite API token from environment variables."""
+    token = os.environ.get("EVENTBRITE_TOKEN")
+    if not token:
+        print("ERROR: EVENTBRITE_TOKEN environment variable is not set", file=sys.stderr)
+        save_json({"generated": False, "error": "EVENTBRITE_TOKEN is not set"}, OUT_JSON)
+        save_markdown([], OUT_MD)
+        sys.exit(2)
+    return token.strip()
+
+
+def validate_token(session: requests.Session, headers: Dict[str, str]) -> None:
+    """Validate the token by calling the /users/me endpoint."""
+    url = f"{API_BASE}/users/me/"
+    print(f"Validating token...")
     try:
-        resp = requests.get(f"{API_BASE}/users/me/", headers=headers, timeout=15)
-        if resp.status_code == 200:
-            print("Token validation successful")
-            return True
-        else:
-            print(f"Token validation failed: {resp.status_code} - {resp.text[:256]}")
-            return False
+        resp = session.get(url, headers=headers, timeout=15)
+        print(f"Token validation response: {resp.status_code}")
     except requests.RequestException as exc:
-        print(f"Token validation request error: {exc}")
-        return False
+        print(f"Token validation request error: {exc}", file=sys.stderr)
+        raise RuntimeError(f"token_validation_request_error:{exc}")
+    
+    if resp.status_code == 200:
+        print("✅ Token validation successful")
+        return
+    elif resp.status_code in (401, 403):
+        print(f"❌ Token invalid or forbidden: {resp.status_code}", file=sys.stderr)
+        raise RuntimeError(f"token_invalid_or_forbidden:http_{resp.status_code}:{resp.text[:256]}")
+    elif resp.status_code == 429:
+        print(f"⚠️ Rate limited on token validation", file=sys.stderr)
+        raise RuntimeError(f"rate_limited_on_token_validation:http_429:{resp.text[:256]}")
+    else:
+        print(f"❌ Token validation HTTP error: {resp.status_code}", file=sys.stderr)
+        raise RuntimeError(f"token_validation_http_error:http_{resp.status_code}:{resp.text[:256]}")
 
 
 def search_region(
@@ -52,8 +130,8 @@ def search_region(
     location_address: str,
     within: str,
 ) -> Tuple[List[Dict], List[str]]:
-    """Search for events in a specific region."""
-    # Add date range to ensure we get upcoming events
+    """Perform a paginated search on Eventbrite for a single region."""
+    # Add start_date parameter to ensure we get upcoming events
     start_date = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
     end_date = (datetime.utcnow() + timedelta(days=LOOKAHEAD_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
     
@@ -67,239 +145,279 @@ def search_region(
         "sort_by": "date",
         "page": 1,
     }
-    
-    print(f"Searching {location_address} for: {query}")
+    print(f"\n🔍 Searching {location_address} for: '{query}'")
+    print(f"📅 Date range: {start_date} to {end_date}")
     
     results: List[Dict] = []
     warnings: List[str] = []
-    max_pages = 20  # Prevent infinite loops
+    page_count = 0
+    max_pages = 50
     
-    for page_num in range(1, max_pages + 1):
-        params["page"] = page_num
+    while page_count < max_pages:
+        url = f"{API_BASE}/events/search/"
+        print(f"📄 Fetching page {params['page']} for {location_address}")
         
         try:
-            resp = session.get(f"{API_BASE}/events/search/", headers=headers, params=params, timeout=30)
-            print(f"Page {page_num}: Status {resp.status_code}")
-            
-            if resp.status_code == 404:
-                warnings.append(f"404_not_found:{location_address}")
-                break
-            elif resp.status_code in (401, 403):
-                warnings.append(f"auth_error:{location_address}:{resp.status_code}")
-                break
-            elif resp.status_code == 429:
-                warnings.append(f"rate_limited:{location_address}")
-                time.sleep(5)  # Wait longer for rate limits
-                break
-            elif resp.status_code != 200:
-                warnings.append(f"http_error:{location_address}:{resp.status_code}")
-                break
-                
-            try:
-                data = resp.json()
-            except ValueError:
-                warnings.append(f"invalid_json:{location_address}")
-                break
-            
-            page_events = data.get("events", [])
-            results.extend(page_events)
-            print(f"  Found {len(page_events)} events on page {page_num}")
-            
-            # Check if there are more pages
-            pagination = data.get("pagination", {})
-            if not pagination.get("has_more_items", False):
-                print(f"  No more pages for {location_address}")
-                break
-                
-            time.sleep(0.5)  # Rate limiting delay
-            
+            resp = session.get(url, headers=headers, params=params, timeout=30)
+            print(f"   Response: {resp.status_code}")
         except requests.RequestException as exc:
-            warnings.append(f"request_error:{location_address}:{exc}")
+            error_msg = f"request_error:{location_address}:{exc}"
+            print(f"❌ Request error: {error_msg}", file=sys.stderr)
+            warnings.append(error_msg)
             break
+        
+        if resp.status_code == 404:
+            warning_msg = f"404:{location_address}:path_not_found"
+            print(f"⚠️ 404 - No events found for {location_address}")
+            warnings.append(warning_msg)
+            break
+        elif resp.status_code in (401, 403):
+            warning_msg = f"auth_error_http_{resp.status_code}:{location_address}:{resp.text[:256]}"
+            print(f"❌ Auth error: {warning_msg}", file=sys.stderr)
+            warnings.append(warning_msg)
+            break
+        elif resp.status_code == 429:
+            warning_msg = f"rate_limited_http_429:{location_address}:{resp.text[:256]}"
+            print(f"⚠️ Rate limited: {warning_msg}", file=sys.stderr)
+            warnings.append(warning_msg)
+            print("   Waiting 10 seconds before continuing...")
+            time.sleep(10)
+            break
+        elif resp.status_code != 200:
+            warning_msg = f"http_{resp.status_code}:{location_address}:{resp.text[:256]}"
+            print(f"❌ HTTP error: {warning_msg}", file=sys.stderr)
+            warnings.append(warning_msg)
+            break
+        
+        try:
+            data = resp.json()
+        except ValueError as e:
+            warning_msg = f"invalid_json_response:{location_address}:{resp.text[:256]}"
+            print(f"❌ JSON parsing error: {warning_msg}", file=sys.stderr)
+            warnings.append(warning_msg)
+            break
+        
+        page_events = data.get("events", [])
+        results.extend(page_events)
+        print(f"   Found {len(page_events)} events on page {params['page']}")
+        
+        pagination = data.get("pagination", {})
+        if not pagination.get("has_more_items", False):
+            print(f"✅ No more pages for {location_address}")
+            break
+        
+        params["page"] = int(params.get("page", 1)) + 1
+        page_count += 1
+        time.sleep(PAGE_DELAY_SEC)
     
-    print(f"Total events found for {location_address}: {len(results)}")
+    print(f"📊 Total events found for {location_address}: {len(results)}")
     return results, warnings
 
 
-def normalize_event(event_data: Dict) -> Dict:
-    """Normalize Eventbrite event data to our standard format."""
-    try:
-        # Handle nested name structure
-        name_obj = event_data.get("name", {})
-        title = name_obj.get("text") if isinstance(name_obj, dict) else str(name_obj) if name_obj else "Unnamed Event"
-        
-        # Handle nested start/end structure  
-        start_obj = event_data.get("start", {})
-        start = start_obj.get("local") if isinstance(start_obj, dict) else None
-        
-        end_obj = event_data.get("end", {})
-        end = end_obj.get("local") if isinstance(end_obj, dict) else None
-        
-        # Handle venue information
-        venue = event_data.get("venue", {}) or {}
-        address = venue.get("address", {}) or {}
-        
-        return {
-            "id": event_data.get("id"),
-            "title": title,
-            "start": start,
-            "end": end,
-            "url": event_data.get("url"),
-            "is_free": event_data.get("is_free"),
-            "status": event_data.get("status"),
-            "city": address.get("city"),
-            "state": address.get("region"),
-            "venue_name": venue.get("name"),
-            "address": address.get("localized_address_display"),
-            "source": "eventbrite"
-        }
-    except Exception as ex:
-        print(f"Error normalizing event {event_data.get('id', 'unknown')}: {ex}")
-        return {}
-
-
-def filter_upcoming_events(events: List[Dict]) -> List[Dict]:
-    """Filter events to only include those in the next LOOKAHEAD_DAYS."""
-    now = datetime.utcnow()
-    cutoff = now + timedelta(days=LOOKAHEAD_DAYS)
-    filtered = []
-    
-    for event in events:
-        start_str = event.get("start")
-        if not start_str:
-            continue
-            
+def normalize_events(events: List[Dict]) -> List[Dict]:
+    """Normalize raw Eventbrite events into a simplified structure."""
+    normalized: List[Dict] = []
+    for e in events:
         try:
-            # Parse the datetime string
-            if start_str.endswith('Z'):
-                start_dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
-            else:
-                start_dt = datetime.fromisoformat(start_str)
+            venue = e.get("venue") or {}
+            address = venue.get("address") or {}
             
-            # Remove timezone info for comparison with naive UTC datetime
-            if start_dt.tzinfo is not None:
-                start_dt = start_dt.replace(tzinfo=None)
+            # Handle nested name structure properly
+            name_obj = e.get("name", {})
+            name = name_obj.get("text") if isinstance(name_obj, dict) else str(name_obj) if name_obj else None
+            
+            # Handle nested start/end structure properly
+            start_obj = e.get("start", {})
+            start = start_obj.get("local") if isinstance(start_obj, dict) else str(start_obj) if start_obj else None
+            
+            end_obj = e.get("end", {})
+            end = end_obj.get("local") if isinstance(end_obj, dict) else str(end_obj) if end_obj else None
+            
+            normalized_event = {
+                "id": e.get("id"),
+                "name": name,
+                "url": e.get("url"),
+                "start": start,
+                "end": end,
+                "is_free": e.get("is_free"),
+                "status": e.get("status"),
+                "city": address.get("city"),
+                "state": address.get("region"),
+                "venue_name": venue.get("name"),
+                "address": address.get("localized_address_display"),
+            }
+            
+            # Only add if we have essential fields
+            if name and start:
+                normalized.append(normalized_event)
                 
-            if now <= start_dt <= cutoff:
-                filtered.append(event)
+        except Exception as ex:
+            print(f"⚠️ Error normalizing event {e.get('id', 'unknown')}: {ex}", file=sys.stderr)
+            continue
+    
+    return normalized
+
+
+def filter_upcoming(events: List[Dict], days: int = LOOKAHEAD_DAYS) -> List[Dict]:
+    """Return events starting within the next `days` days."""
+    now = datetime.utcnow()
+    cutoff = now + timedelta(days=days)
+    filtered: List[Dict] = []
+    
+    for e in events:
+        start = e.get("start")
+        if not start:
+            continue
+        
+        try:
+            # Handle different datetime formats more robustly
+            if isinstance(start, str):
+                # Handle various ISO formats
+                if start.endswith('Z'):
+                    dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                    # Convert to naive UTC for comparison
+                    dt = dt.replace(tzinfo=None)
+                elif '+' in start or '-' in start[-6:]:  # Has timezone
+                    dt = datetime.fromisoformat(start)
+                    # Convert to naive UTC for comparison  
+                    dt = dt.replace(tzinfo=None)
+                else:
+                    # Assume local time, parse as naive datetime
+                    dt = datetime.fromisoformat(start)
+            else:
+                continue
                 
         except (ValueError, AttributeError) as ex:
-            print(f"Error parsing datetime '{start_str}': {ex}")
+            print(f"⚠️ Error parsing datetime '{start}' for event {e.get('id', 'unknown')}: {ex}", file=sys.stderr)
             continue
+        
+        if now <= dt <= cutoff:
+            filtered.append(e)
     
     return filtered
 
 
-def deduplicate_events(events: List[Dict]) -> List[Dict]:
-    """Remove duplicate events based on title and start time."""
-    seen = set()
-    unique = []
-    
-    for event in events:
-        key = (event.get("title", ""), event.get("start", ""))
-        if key not in seen:
-            seen.add(key)
-            unique.append(event)
-        else:
-            print(f"Skipping duplicate: {event.get('title', 'Unknown')}")
-    
-    return unique
-
-
 def fetch_events(token: str, query: str = DEFAULT_QUERY, states: List[str] = None, within: str = DEFAULT_WITHIN) -> Dict:
-    """Main function to fetch events from Eventbrite API."""
+    """Fetch events for all requested states and return a structured payload."""
     if states is None:
         states = DEFAULT_STATES
     
-    # Validate token first
-    if not validate_token(token):
-        raise RuntimeError("Invalid or expired Eventbrite token")
-    
+    user_agent = os.environ.get("VNN_USER_AGENT", "VNN-Events-Scraper/1.0")
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
-        "User-Agent": "VNN-Events-Scraper/1.0"
+        "User-Agent": user_agent,
+        "Content-Type": "application/json",
     }
+    
+    print(f"🎯 Query: '{query}' | States: {states} | Within: {within}")
     
     session = requests.Session()
     session.headers.update(headers)
     
-    all_events = []
-    all_warnings = []
-    
-    # Fetch events from each state
-    for state in states:
-        print(f"\n--- Fetching events for {state} ---")
-        events, warnings = search_region(session, headers, query, state, within)
-        all_events.extend(events)
-        all_warnings.extend(warnings)
-    
-    print(f"\n--- Processing {len(all_events)} raw events ---")
-    
-    # Normalize events
-    normalized = []
-    for event in all_events:
-        norm_event = normalize_event(event)
-        if norm_event and norm_event.get("title") and norm_event.get("start"):
-            normalized.append(norm_event)
-    
-    print(f"Normalized: {len(normalized)} events")
-    
-    # Filter to upcoming events only
-    upcoming = filter_upcoming_events(normalized)
-    print(f"Upcoming: {len(upcoming)} events")
-    
-    # Deduplicate
-    unique = deduplicate_events(upcoming)
-    print(f"Unique: {len(unique)} events")
-    
-    return {
-        "generated": True,
-        "source": "eventbrite",
-        "query": query,
-        "regions": states,
-        "within": within,
-        "count": len(unique),
-        "events": unique,
-        "warnings": all_warnings,
-        "timestamp": datetime.utcnow().isoformat() + "Z"
-    }
+    try:
+        # Validate token first
+        validate_token(session, headers)
+        
+        all_raw: List[Dict] = []
+        all_warnings: List[str] = []
+        
+        for state in states:
+            print(f"\n{'='*50}")
+            print(f"🏔️ Searching {state}")
+            print(f"{'='*50}")
+            
+            events, warns = search_region(session, headers, query, state, within)
+            all_raw.extend(events)
+            all_warnings.extend(warns)
+            print(f"📈 Running total: {len(all_raw)} raw events")
+        
+        print(f"\n{'='*50}")
+        print(f"📊 PROCESSING {len(all_raw)} RAW EVENTS")
+        print(f"{'='*50}")
+        
+        normalized = normalize_events(all_raw)
+        print(f"✨ Normalized: {len(normalized)} events")
+        
+        upcoming = filter_upcoming(normalized, LOOKAHEAD_DAYS)
+        print(f"📅 Upcoming: {len(upcoming)} events")
+        
+        # Deduplicate events by (name, start)
+        seen = set()
+        unique: List[Dict] = []
+        for e in upcoming:
+            key = (e.get("name"), e.get("start"))
+            if key in seen:
+                print(f"🔄 Skipping duplicate: {e.get('name')}")
+                continue
+            seen.add(key)
+            unique.append(e)
+        
+        print(f"🎯 Final unique events: {len(unique)}")
+        
+        return {
+            "generated": True,
+            "source": "eventbrite",
+            "query": query,
+            "regions": states,
+            "within": within,
+            "count": len(unique),
+            "events": unique,
+            "warnings": all_warnings,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        }
+        
+    except Exception as exc:
+        print(f"❌ Error in fetch_events: {exc}", file=sys.stderr)
+        raise
 
 
-def main():
-    """Main entry point."""
-    print("=== Eventbrite Events Scraper ===")
-    
-    token = os.environ.get("EVENTBRITE_TOKEN")
-    if not token:
-        error_msg = "EVENTBRITE_TOKEN environment variable not set"
-        print(f"ERROR: {error_msg}")
-        save_results({"generated": False, "error": error_msg})
-        sys.exit(2)
+def main() -> int:
+    """Main entry point with enhanced error handling and logging."""
+    print("=" * 60)
+    print("🇺🇸 EVENTBRITE VETERAN EVENTS SCRAPER")
+    print("=" * 60)
+    print(f"📅 Looking for events in the next {LOOKAHEAD_DAYS} days")
+    print(f"🎯 Target states: {DEFAULT_STATES}")
     
     try:
-        # Fetch events
-        result = fetch_events(token.strip())
+        token = get_token()
+        print("🔑 Token acquired successfully")
         
-        # Save results
-        save_results(result)
+        payload = fetch_events(token)
         
-        print(f"\n=== SUCCESS ===")
-        print(f"Found {result['count']} events")
+        print("\n" + "=" * 60)
+        print(f"✅ SUCCESS: Found {payload['count']} events")
+        print("=" * 60)
         
-        if result.get("warnings"):
-            print(f"Warnings: {len(result['warnings'])}")
-            for warning in result["warnings"]:
-                print(f"  - {warning}")
+        save_json(payload, OUT_JSON)
+        save_markdown(payload.get("events", []), OUT_MD)
+        
+        print(f"💾 Results saved to {OUT_JSON} and {OUT_MD}")
+        
+        if payload.get("warnings"):
+            print(f"\n⚠️ Warnings encountered: {len(payload['warnings'])}")
+            for warning in payload["warnings"]:
+                print(f"   • {warning}")
+        else:
+            print("✨ No warnings - clean run!")
         
         return 0
         
     except Exception as exc:
-        error_msg = f"Scraper failed: {exc}"
-        print(f"ERROR: {error_msg}")
-        save_results({"generated": False, "error": error_msg})
+        error_payload = {
+            "generated": False, 
+            "error": str(exc),
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+        save_json(error_payload, OUT_JSON)
+        save_markdown([], OUT_MD)
+        print(f"\n" + "=" * 60)
+        print(f"💥 FATAL ERROR: {exc}")
+        print("=" * 60)
         return 1
 
 
 if __name__ == "__main__":
     sys.exit(main())
+        
