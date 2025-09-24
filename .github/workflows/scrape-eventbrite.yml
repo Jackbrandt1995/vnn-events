@@ -36,17 +36,17 @@ jobs:
         run: |
           if [ -f output/events.json ]; then
             echo "Scraper completed. Results:"
-            python -c "
+            python -c '
 import json
-with open('output/events.json') as f:
+with open("output/events.json") as f:
     data = json.load(f)
-if data.get('generated'):
-    print(f'✅ Success: Found {data.get(\"count\", 0)} events')
-    if data.get('warnings'):
-        print(f'⚠️  Warnings: {len(data[\"warnings\"])}')
+if data.get("generated"):
+    print(f"✅ Success: Found {data.get(\"count\", 0)} events")
+    if data.get("warnings"):
+        print(f"⚠️  Warnings: {len(data[\"warnings\"])}")
 else:
-    print(f'❌ Failed: {data.get(\"error\", \"Unknown error\")}')
-"
+    print(f"❌ Failed: {data.get(\"error\", \"Unknown error\")}")
+'
           else
             echo "❌ No output file generated"
           fi
