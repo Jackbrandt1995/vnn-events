@@ -3,7 +3,7 @@ name: Scrape Eventbrite
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'  # Fixed: was '0 6 * **' (missing last field)
+    - cron: '0 6 * * *'
 
 jobs:
   scrape:
@@ -25,43 +25,23 @@ jobs:
           pip install requests python-dateutil
 
       - name: Create output directory
-        run: |
-          mkdir -p output
+        run: mkdir -p output
 
       - name: Run Eventbrite scraper
-        run: |
-          python scripts/scrape_eventbrite.py
+        run: python scripts/scrape_eventbrite.py
 
-      - name: Display results summary
+      - name: Check results
         run: |
           if [ -f output/events.json ]; then
-            echo "Scraper completed. Results:"
-            python -c '
-import json
-with open("output/events.json") as f:
-    data = json.load(f)
-if data.get("generated"):
-    print(f"✅ Success: Found {data.get(\"count\", 0)} events")
-    if data.get("warnings"):
-        print(f"⚠️  Warnings: {len(data[\"warnings\"])}")
-else:
-    print(f"❌ Failed: {data.get(\"error\", \"Unknown error\")}")
-'
+            echo "Results file exists"
+            cat output/events.json
           else
-            echo "❌ No output file generated"
+            echo "No results file found"
           fi
 
       - name: Upload results artifact
         uses: actions/upload-artifact@v4
         with:
           name: eventbrite-events
-          path: output/events.json
-          if-no-files-found: warn
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eventbrite-logs
           path: output/
-          if-no-files-found: ignore
+          if-no-files-found: warn
