@@ -10,7 +10,6 @@ import sys
 import time
 from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
-
 import requests
 
 API_BASE = "https://www.eventbriteapi.com/v3"
@@ -57,8 +56,8 @@ def search_region(session: requests.Session, headers: Dict[str, str], query: str
         "sort_by": "date",
         "page": 1,
     }
-    results: List[Dict] = []
-    warnings: List[str] = []
+    results = []
+    warnings = []
     while True:
         resp = session.get(f"{API_BASE}/events/search", headers=headers, params=params, timeout=30)
         if resp.status_code == 404:
@@ -86,7 +85,7 @@ def search_region(session: requests.Session, headers: Dict[str, str], query: str
     return results, warnings
 
 def normalize_events(events: List[Dict]) -> List[Dict]:
-    normalized: List[Dict] = []
+    normalized = []
     for e in events:
         venue = e.get("venue") or {}
         address = venue.get("address") or {}
@@ -105,7 +104,7 @@ def normalize_events(events: List[Dict]) -> List[Dict]:
 def filter_upcoming(events: List[Dict], days: int = LOOKAHEAD_DAYS) -> List[Dict]:
     now = datetime.utcnow()
     cutoff = now + timedelta(days=days)
-    filtered: List[Dict] = []
+    filtered = []
     for e in events:
         start = e.get("start")
         if not start:
@@ -128,8 +127,8 @@ def fetch_events(token: str, query: str = DEFAULT_QUERY, states: List[str] = Non
     }
     session = requests.Session()
     validate_token(session, headers)
-    all_raw: List[Dict] = []
-    all_warnings: List[str] = []
+    all_raw = []
+    all_warnings = []
     for state in states:
         events, warns = search_region(session, headers, query, state, within)
         all_raw.extend(events)
@@ -137,7 +136,7 @@ def fetch_events(token: str, query: str = DEFAULT_QUERY, states: List[str] = Non
     normalized = normalize_events(all_raw)
     upcoming = filter_upcoming(normalized, LOOKAHEAD_DAYS)
     seen = set()
-    unique: List[Dict] = []
+    unique = []
     for e in upcoming:
         key = (e.get("name"), e.get("start"))
         if key not in seen:
